@@ -1,0 +1,13 @@
+# Local SQLite databases created when the app or tests run
+*.db
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets
+.env
