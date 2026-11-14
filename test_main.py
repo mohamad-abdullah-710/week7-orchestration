@@ -177,3 +177,51 @@ def test_scale_ingredient_formats():
     assert scale_ingredient("salt to taste", 2) == "salt to taste"
     assert scale_ingredient("", 2) == ""
     assert scale_ingredient("1/0 cup oops", 2) == "1/0 cup oops"
+
+
+def test_scale_ingredient_ranges():
+    assert scale_ingredient("2-3 cloves garlic", 2) == "4-6 cloves garlic"
+    assert scale_ingredient("2 - 3 cloves garlic", 2) == "4 - 6 cloves garlic"
+    assert scale_ingredient("2–3 cloves garlic", 2) == "4–6 cloves garlic"
+    assert scale_ingredient("2 to 3 apples", 2) == "4 to 6 apples"
+    assert scale_ingredient("1/2-1 tsp chili", 2) == "1-2 tsp chili"
+    assert scale_ingredient("1 1/2 - 2 cups rice", 2) == "3 - 4 cups rice"
+    # "to" that is not followed by a number is not a range
+    assert scale_ingredient("2 tomatoes", 2) == "4 tomatoes"
+    assert scale_ingredient("1/2-1/0 cup oops", 2) == "1/2-1/0 cup oops"
+
+
+def test_scale_ingredient_thousands_separator():
+    assert scale_ingredient("1,000 g sugar", 2) == "2000 g sugar"
+    assert scale_ingredient("1,000.5 g sugar", 2) == "2001 g sugar"
+    assert scale_ingredient("12,345,678 grains", 1) == "12345678 grains"
+    # a comma followed by 1-2 digits is still a decimal comma
+    assert scale_ingredient("1,5 kg potatoes", 2) == "3 kg potatoes"
+    assert scale_ingredient("12,25 kg potatoes", 2) == "24.5 kg potatoes"
+
+
+def test_scale_ingredient_unicode_fractions():
+    assert scale_ingredient("1½ cups flour", 2) == "3 cups flour"
+    assert scale_ingredient("1 ½ cups flour", 2) == "3 cups flour"
+    assert scale_ingredient("½ cup milk", 2) == "1 cup milk"
+    assert scale_ingredient("¾ tsp salt", 4) == "3 tsp salt"
+    assert scale_ingredient("⅓ cup oil", 3) == "1 cup oil"
+    assert scale_ingredient("½-1 tsp chili", 2) == "1-2 tsp chili"
+
+
+def test_scale_ingredient_small_amounts_never_become_zero():
+    assert scale_ingredient("1 pinch salt", 0.001) == "0.001 pinch salt"
+    assert scale_ingredient("200 g flour", 1e-9) == "0.0000002 g flour"
+    assert scale_ingredient("1 g yeast", 0.0123) == "0.01 g yeast"  # normal 2 dp
+    assert scale_ingredient("1 g yeast", 0.00437) == "0.0044 g yeast"  # 2 sig figs
+    assert scale_ingredient("0 g sugar", 2) == "0 g sugar"
+
+
+def test_scaled_endpoint_handles_ranges_and_unicode():
+    rid = client.post(
+        "/recipes",
+        json={"title": "Stew", "ingredients": ["2-3 cloves garlic", "1½ cups stock"]},
+    ).json()["id"]
+    r = client.get(f"/recipes/{rid}/scaled", params={"factor": 2})
+    assert r.status_code == 200
+    assert r.json()["ingredients"] == ["4-6 cloves garlic", "3 cups stock"]
