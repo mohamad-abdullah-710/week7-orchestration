@@ -11,11 +11,12 @@ Test:
     pytest
 """
 import json
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -113,6 +114,60 @@ def get_recipe(recipe_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="unknown recipe")
     return _row_to_recipe(row)
+
+
+# Leading quantity of an ingredient: "1 1/2", "1/2", "200", "0.5" or "1,5".
+_QUANTITY_RE = re.compile(
+    r"^\s*(?:(?P<whole>\d+)\s+(?P<num>\d+)/(?P<den>\d+)"
+    r"|(?P<fnum>\d+)/(?P<fden>\d+)"
+    r"|(?P<dec>\d+(?:[.,]\d+)?))"
+)
+
+
+def _format_quantity(value: float) -> str:
+    """Show a number without useless decimals: 400.0 -> "400", 0.25 -> "0.25"."""
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def scale_ingredient(ingredient: str, factor: float) -> str:
+    """Multiply the leading quantity of an ingredient by `factor`.
+
+    "200 g flour" * 2 -> "400 g flour". Fractions ("1/2 cup milk") and mixed
+    numbers ("1 1/2 cups sugar") are supported. Ingredients with no leading
+    number ("salt to taste") are returned unchanged. Results are rounded to
+    2 decimal places.
+    """
+    match = _QUANTITY_RE.match(ingredient)
+    if match is None:
+        return ingredient
+    if match["whole"] is not None:
+        den = int(match["den"])
+        if den == 0:
+            return ingredient
+        amount = int(match["whole"]) + int(match["num"]) / den
+    elif match["fnum"] is not None:
+        den = int(match["fden"])
+        if den == 0:
+            return ingredient
+        amount = int(match["fnum"]) / den
+    else:
+        amount = float(match["dec"].replace(",", "."))
+    leading = ingredient[: len(ingredient) - len(ingredient.lstrip())]
+    return leading + _format_quantity(amount * factor) + ingredient[match.end():]
+
+
+@app.get("/recipes/{recipe_id}/scaled")
+def get_scaled_recipe(recipe_id: int, factor: float = Query(..., gt=0, le=1000)):
+    """Return the recipe with every ingredient quantity multiplied by `factor`.
+
+    Read-only: the stored recipe is not changed. `factor` must be > 0 and
+    <= 1000 (otherwise 422). Unknown recipe -> 404.
+    """
+    recipe = get_recipe(recipe_id)
+    recipe["ingredients"] = [scale_ingredient(i, factor) for i in recipe["ingredients"]]
+    recipe["factor"] = factor
+    return recipe
 
 
 @app.post("/recipes/{recipe_id}/favorite")

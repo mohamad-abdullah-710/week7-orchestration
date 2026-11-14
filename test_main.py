@@ -4,7 +4,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 import main
-from main import app
+from main import app, scale_ingredient
 
 client = TestClient(app)
 
@@ -124,3 +124,56 @@ def test_init_db_migrates_old_table_without_favorite(tmp_path, monkeypatch):
     rid = client.get("/recipes").json()[0]["id"]
     assert client.get(f"/recipes/{rid}").json()["favorite"] is False
     assert client.post(f"/recipes/{rid}/favorite").json()["favorite"] is True
+
+
+def test_scaled_recipe_doubles_quantities():
+    rid = client.post(
+        "/recipes",
+        json={
+            "title": "Bread",
+            "ingredients": ["200 g flour", "1/2 cup milk", "1 1/2 tsp salt", "water"],
+            "tags": ["baking"],
+        },
+    ).json()["id"]
+    r = client.get(f"/recipes/{rid}/scaled", params={"factor": 2})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == rid
+    assert body["title"] == "Bread"
+    assert body["tags"] == ["baking"]
+    assert body["factor"] == 2
+    assert body["ingredients"] == ["400 g flour", "1 cup milk", "3 tsp salt", "water"]
+
+
+def test_scaled_recipe_does_not_change_stored_recipe():
+    rid = client.post(
+        "/recipes", json={"title": "Rice", "ingredients": ["300 g rice"]}
+    ).json()["id"]
+    assert client.get(f"/recipes/{rid}/scaled", params={"factor": 0.5}).json()[
+        "ingredients"
+    ] == ["150 g rice"]
+    assert client.get(f"/recipes/{rid}").json()["ingredients"] == ["300 g rice"]
+
+
+def test_scaled_unknown_recipe_404():
+    r = client.get("/recipes/99999/scaled", params={"factor": 2})
+    assert r.status_code == 404
+
+
+def test_scaled_rejects_bad_factor():
+    rid = client.post("/recipes", json={"title": "Tea"}).json()["id"]
+    for bad in ["0", "-1", "abc", "1001"]:
+        r = client.get(f"/recipes/{rid}/scaled", params={"factor": bad})
+        assert r.status_code == 422, bad
+    assert client.get(f"/recipes/{rid}/scaled").status_code == 422
+
+
+def test_scale_ingredient_formats():
+    assert scale_ingredient("200 g flour", 1.5) == "300 g flour"
+    assert scale_ingredient("0.5 l milk", 3) == "1.5 l milk"
+    assert scale_ingredient("1,5 kg potatoes", 2) == "3 kg potatoes"
+    assert scale_ingredient("1/3 cup sugar", 1) == "0.33 cup sugar"
+    assert scale_ingredient("2 eggs", 0.5) == "1 eggs"
+    assert scale_ingredient("salt to taste", 2) == "salt to taste"
+    assert scale_ingredient("", 2) == ""
+    assert scale_ingredient("1/0 cup oops", 2) == "1/0 cup oops"
