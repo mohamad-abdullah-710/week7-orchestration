@@ -80,10 +80,22 @@ def create_recipe(recipe: RecipeIn):
 
 
 @app.get("/recipes")
-def list_recipes():
+def list_recipes(tag: str | None = None):
+    """List recipes, optionally only those with a given tag.
+
+    Tag matching is case-insensitive and ignores surrounding spaces
+    ("Breakfast" matches "breakfast"). A missing or empty `tag` returns all
+    recipes. A tag no recipe has returns [] (not 404).
+    """
     with closing(get_db()) as conn:
         rows = conn.execute("SELECT * FROM recipes ORDER BY id").fetchall()
-    return [_row_to_recipe(r) for r in rows]
+    recipes = [_row_to_recipe(r) for r in rows]
+    wanted = (tag or "").strip().lower()
+    if not wanted:
+        return recipes
+    return [
+        rec for rec in recipes if wanted in (t.strip().lower() for t in rec["tags"])
+    ]
 
 
 @app.get("/recipes/{recipe_id}")

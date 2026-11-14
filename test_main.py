@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -28,3 +30,39 @@ def test_list_recipes():
 def test_unknown_recipe_404():
     r = client.get("/recipes/99999")
     assert r.status_code == 404
+
+
+def _unique_tag(name: str) -> str:
+    # recipes.db is shared between runs, so give each test its own tag.
+    return f"{name}-{uuid.uuid4().hex[:8]}"
+
+
+def test_tag_filter_returns_only_matching():
+    tag = _unique_tag("breakfast")
+    a = client.post(
+        "/recipes", json={"title": "Omelette", "tags": [tag, "eggs"]}
+    ).json()
+    client.post("/recipes", json={"title": "Soup", "tags": [_unique_tag("dinner")]})
+    r = client.get("/recipes", params={"tag": tag})
+    assert r.status_code == 200
+    assert [rec["id"] for rec in r.json()] == [a["id"]]
+
+
+def test_tag_filter_no_match_returns_empty_list():
+    r = client.get("/recipes", params={"tag": _unique_tag("nothing")})
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_no_tag_param_returns_all():
+    client.post("/recipes", json={"title": "Salad", "tags": [_unique_tag("lunch")]})
+    all_recipes = client.get("/recipes").json()
+    assert client.get("/recipes", params={"tag": ""}).json() == all_recipes
+    assert any(rec["title"] == "Salad" for rec in all_recipes)
+
+
+def test_tag_filter_is_case_insensitive():
+    tag = _unique_tag("brunch")
+    a = client.post("/recipes", json={"title": "Waffles", "tags": [tag]}).json()
+    r = client.get("/recipes", params={"tag": tag.upper()})
+    assert [rec["id"] for rec in r.json()] == [a["id"]]
