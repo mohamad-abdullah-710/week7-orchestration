@@ -11,6 +11,7 @@ Test:
     pytest
 """
 import json
+import math
 import re
 import sqlite3
 from contextlib import closing
@@ -133,10 +134,11 @@ _NUMBER = (
     r"|\d+(?:[.,]\d+)?"                    # integer or decimal: "200", "0.5", "1,5"
 )
 _THOUSANDS_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?")
-# Leading quantity, optionally a range: "2-3", "2 – 3", "2 to 3", "1/2-1".
+# Leading quantity, optionally a range: "2-3", "2 – 3", "2—3", "2 to 3",
+# "2 or 3", "1/2-1". Hyphen, en dash and em dash all count as range dashes.
 _QUANTITY_RE = re.compile(
     rf"^\s*(?P<first>{_NUMBER})"
-    rf"(?:(?P<sep>\s*[-–]\s*|\s+to\s+)(?P<second>{_NUMBER}))?"
+    rf"(?:(?P<sep>\s*[-–—]\s*|\s+(?:to|or)\s+)(?P<second>{_NUMBER}))?"
 )
 
 
@@ -149,7 +151,7 @@ def _parse_quantity(text: str) -> float | None:
     if "/" in text:
         parts = text.split()
         num, den = (int(x) for x in parts[-1].split("/"))
-        if den == 0:
+        if den == 0 or (num != 0 and num / den == 0):  # zero / underflow to 0.0
             return None
         return (int(parts[0]) if len(parts) == 2 else 0) + num / den
     if _THOUSANDS_RE.fullmatch(text):
@@ -179,7 +181,8 @@ def scale_ingredient(ingredient: str, factor: float) -> str:
         digits is read as a thousands separator, so "1,500" is 1500, not 1.5)
       - fractions and mixed numbers: "1/2 cup", "1 1/2 cups"
       - unicode fractions: "½ cup", "1½ cups"
-      - ranges: "2-3 cloves", "2 – 3", "2 to 3 apples", "1/2-1 tsp"
+      - ranges: "2-3 cloves", "2 – 3", "2—3", "2 to 3 apples", "2 or 3 eggs",
+        "1/2-1 tsp"
 
     Only the quantity at the start is scaled; other numbers in the text are
     left alone. Ingredients with no leading quantity ("salt to taste") and
@@ -188,18 +191,38 @@ def scale_ingredient(ingredient: str, factor: float) -> str:
     Known limits (kept simple on purpose): results are always written as
     decimals ("1/3 cup" -> "0.33 cup"), units and plurals are not adjusted,
     and countable items can become fractional ("3 eggs" x1.5 -> "4.5 eggs").
+
+    Ambiguities, resolved by the rules above rather than by guessing:
+      - a dash right after a quantity is read as a range when another
+        quantity follows it, so "3 1/2-ounce bar" x2 -> "7-ounce bar" (the
+        "-ounce" stays), and "2-3" is always a range, never a size like
+        "2-inch"; "1-inch piece" is a single quantity ("2-inch piece").
+      - a dot is always a decimal point: "1.000 g" (European thousands
+        style) is read as 1.0, not 1000.
+      - numbers too large to handle safely (e.g. thousands of digits, or a
+        result that overflows to infinity) leave the line unchanged.
     """
     match = _QUANTITY_RE.match(ingredient)
     if match is None:
         return ingredient
-    first = _parse_quantity(match["first"])
-    second = _parse_quantity(match["second"]) if match["second"] else 0.0
-    if first is None or second is None:
+    try:
+        first = _parse_quantity(match["first"])
+        second = _parse_quantity(match["second"]) if match["second"] else 0.0
+        if first is None or second is None:
+            return ingredient
+        scaled_first, scaled_second = first * factor, second * factor
+    except (ValueError, OverflowError):
+        # int() refuses huge digit strings; huge fractions overflow float.
         return ingredient
+    for original, value in ((first, scaled_first), (second, scaled_second)):
+        # Overflow to inf/nan, or a non-zero amount underflowing to 0.0.
+        if not math.isfinite(value) or (original != 0 and value == 0):
+            return ingredient
+    first, second = scaled_first, scaled_second
     leading = ingredient[: len(ingredient) - len(ingredient.lstrip())]
-    scaled = _format_quantity(first * factor)
+    scaled = _format_quantity(first)
     if match["second"]:
-        scaled += match["sep"] + _format_quantity(second * factor)
+        scaled += match["sep"] + _format_quantity(second)
     return leading + scaled + ingredient[match.end():]
 
 

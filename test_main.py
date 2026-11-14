@@ -225,3 +225,46 @@ def test_scaled_endpoint_handles_ranges_and_unicode():
     r = client.get(f"/recipes/{rid}/scaled", params={"factor": 2})
     assert r.status_code == 200
     assert r.json()["ingredients"] == ["4-6 cloves garlic", "3 cups stock"]
+
+
+def test_scale_ingredient_more_range_separators():
+    assert scale_ingredient("2—3 eggs", 2) == "4—6 eggs"  # em dash
+    assert scale_ingredient("2 — 3 eggs", 2) == "4 — 6 eggs"
+    assert scale_ingredient("2 or 3 eggs", 2) == "4 or 6 eggs"
+    # "or"/"to" not followed by a number is not a range
+    assert scale_ingredient("2 oranges", 2) == "4 oranges"
+    assert scale_ingredient("2 or more eggs", 2) == "4 or more eggs"
+
+
+def test_scale_ingredient_leading_number_with_hyphen_is_not_a_range():
+    assert scale_ingredient("1-inch piece ginger", 2) == "2-inch piece ginger"
+    # documented ambiguity: the dash after "1/2" is not followed by a number
+    assert scale_ingredient("3 1/2-ounce bar", 2) == "7-ounce bar"
+    # documented: a dot is always a decimal point
+    assert scale_ingredient("1.000 g sugar", 2) == "2 g sugar"
+
+
+def test_scale_ingredient_huge_numbers_left_unchanged():
+    huge_fraction = "1" * 5000 + "/2 cup sugar"  # int() digit limit
+    assert scale_ingredient(huge_fraction, 2) == huge_fraction
+    huge_int = "1" * 400 + " g flour"  # float() gives inf
+    assert scale_ingredient(huge_int, 2) == huge_int
+    huge_den = "1/" + "1" * 400 + " g salt"  # underflows to 0.0
+    assert scale_ingredient(huge_den, 2) == huge_den
+    # 0.5 * 5e-324 (smallest float) underflows to 0.0: keep the line, not "0 g"
+    assert scale_ingredient("0.5 g salt", 5e-324) == "0.5 g salt"
+    # a finite value that overflows only after scaling
+    big = "1" + "0" * 307 + " g flour"
+    assert scale_ingredient(big, 1000) == big
+
+
+def test_scaled_endpoint_huge_number_does_not_500():
+    huge = "1" * 5000 + "/2 cup sugar"
+    huge_int = "1" * 400 + " g flour"
+    rid = client.post(
+        "/recipes",
+        json={"title": "Absurd", "ingredients": [huge, huge_int, "200 g butter"]},
+    ).json()["id"]
+    r = client.get(f"/recipes/{rid}/scaled", params={"factor": 2})
+    assert r.status_code == 200
+    assert r.json()["ingredients"] == [huge, huge_int, "400 g butter"]
