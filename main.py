@@ -38,9 +38,16 @@ def init_db() -> None:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 title       TEXT NOT NULL,
                 ingredients TEXT NOT NULL,  -- JSON list of strings
-                tags        TEXT NOT NULL   -- JSON list of strings
+                tags        TEXT NOT NULL,  -- JSON list of strings
+                favorite    INTEGER NOT NULL DEFAULT 0  -- 0/1, returned as bool
             )"""
         )
+        # Migrate databases created before the favorite column existed.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(recipes)")}
+        if "favorite" not in columns:
+            conn.execute(
+                "ALTER TABLE recipes ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
+            )
         conn.commit()
 
 
@@ -59,6 +66,7 @@ def _row_to_recipe(row: sqlite3.Row) -> dict:
         "title": row["title"],
         "ingredients": json.loads(row["ingredients"]),
         "tags": json.loads(row["tags"]),
+        "favorite": bool(row["favorite"]),
     }
 
 
@@ -76,7 +84,7 @@ def create_recipe(recipe: RecipeIn):
         )
         conn.commit()
         rid = cur.lastrowid
-    return {"id": rid, **recipe.model_dump()}
+    return {"id": rid, **recipe.model_dump(), "favorite": False}
 
 
 @app.get("/recipes")
@@ -92,4 +100,19 @@ def get_recipe(recipe_id: int):
         row = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="unknown recipe")
+    return _row_to_recipe(row)
+
+
+@app.post("/recipes/{recipe_id}/favorite")
+def toggle_favorite(recipe_id: int):
+    with closing(get_db()) as conn:
+        cur = conn.execute(
+            "UPDATE recipes SET favorite = 1 - favorite WHERE id = ?", (recipe_id,)
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="unknown recipe")
+        row = conn.execute(
+            "SELECT * FROM recipes WHERE id = ?", (recipe_id,)
+        ).fetchone()
     return _row_to_recipe(row)
